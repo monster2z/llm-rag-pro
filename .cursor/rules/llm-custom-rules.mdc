@@ -1,0 +1,99 @@
+---
+description: 
+globs: 
+alwaysApply: true
+---
+
+# Your rule content
+
+**1. Schema & Data Management**
+
+- **ALWAYS**:
+    - Define schemas for documents (e.g., expense policies), prompts, and user roles.
+    - Use src/ layout and adhere to PEP 8, 484, 517 standards.
+    - Generate code and validators from schemas.
+    - Include document metadata (e.g., category, version, access_level) in schemas.
+- **NEVER**:
+    - Implement data handling without schemas.
+    - Mix package boundaries or use a flat structure.
+
+**2. LLM & RAG Integration**
+
+- **ALWAYS**:
+    - Manage document metadata for RAG in schemas.
+    - Use indexing (e.g., FAISS for offline, Elasticsearch for real-time) for search performance.
+    - Define prompt templates in schemas and apply version control.
+    - Separate retrieved document processing and LLM response mapping into distinct modules.
+- **NEVER**:
+    - Use sequential search without indexing.
+    - Use hardcoded prompts.
+
+**3. Streamlit UI**
+
+- **ALWAYS**:
+    - Use streaming (st.write_stream) for real-time responses.
+    - Manage conversation history with st.session_state.
+    - Display user-friendly error messages in Korean (e.g., "문서를 찾을 수 없습니다" → "해당 기준은 현재 등록되지 않았습니다").
+- **NEVER**:
+    - Mix UI logic with business logic.
+    - Display single responses without conversation history.
+
+**4. Authentication & Security**
+
+- **ALWAYS**:
+    - Implement token-based authentication (e.g., OAuth2, SSO) after user login.
+    - Encrypt sensitive data (e.g., expense amounts, personal info) using libraries like cryptography.
+    - Generate audit logs to track chatbot usage (e.g., user ID, query time, response content).
+    - Validate document access based on schema-defined user permissions.
+- **NEVER**:
+    - Allow document access without authentication.
+    - Expose sensitive data in plaintext.
+
+**5. Scalability**
+
+- **ALWAYS**:
+    - Use asynchronous processing (asyncio) for LLM calls to minimize response delays.
+    - Apply caching (e.g., st.cache_data, Redis) for frequently asked questions.
+    - Leverage indexing-based search engines for handling large document sets.
+- **NEVER**:
+    - Increase user wait times with synchronous calls.
+    - Process repeated requests without caching.
+
+**6. Dependency Management**
+
+- **ALWAYS**:
+    - Use uv for virtual environments (uv venv) and package operations (uv pip).
+    - Pin dependencies strictly with uv pip compile and synchronize with uv pip sync.
+    - Regularly apply security updates.
+- **NEVER**:
+    - Use pip directly or install global packages.
+    - Skip version pinning.
+
+**7. Testing & Validation**
+
+- **ALWAYS**:
+    - Write unit/integration tests based on schema-defined rules.
+    - Test edge cases and error scenarios.
+    - Measure and validate test coverage.
+- **NEVER**:
+    - Skip schema validation.
+    - Omit test documentation.
+
+**8. Response Language Policy**
+
+- **ALWAYS**:
+    - Provide responses in Korean when the user’s query is in Korean, as requested ("Please respond in Korean").
+    - Add Korean explanations for technical terms when necessary (e.g., "RAG → 검색 증강 생성").
+    - Use natural Korean incorporating company-specific terms (e.g., "경비 기준").
+- **NEVER**:
+    - Respond only in English to Korean queries.
+    - Use ambiguous foreign terms without explanation.
+
+**Development Tools & Versions**
+
+- **Python**: 3.11 or 3.12 (balanced stability and modern features).
+- **Streamlit**: 1.33.0 or higher (improved streaming and session management).
+- **UV**: 0.2.x or higher (optimized dependency management).
+- **LLM**: Implement RAG with LangChain or LlamaIndex.
+- **Indexing**: FAISS (offline) or Elasticsearch (real-time).
+- **CI/CD**: Automate schema validation and deployment with GitHub Actions.
