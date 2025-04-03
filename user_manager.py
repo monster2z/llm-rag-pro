@@ -1,92 +1,112 @@
 # user_manager.py
 import streamlit as st
-import yaml
-from yaml.loader import SafeLoader
-import streamlit_authenticator as stauth
+import hashlib
 import os
 from typing import Dict, List, Optional, Any
+import datetime
 
 class UserManager:
-    """사용자 관리 클래스: 사용자 인증, 권한 관리 등 기능 제공"""
+    """사용자 관리 클래스: DB 기반 사용자 인증, 권한 관리 등 기능 제공"""
     
-    def __init__(self, config_path: str = 'config.yaml', db_manager=None):
-        self.config_path = config_path
-        self.db_manager  = db_manager
+    def __init__(self, db_manager):
+        self.db_manager = db_manager
         
-        # 설정 파일 로드 또는 생성
-        if not os.path.exists(config_path):
-            self.config = self._create_default_config()
-        else:
-            with open(config_path, 'r', encoding='utf-8') as file:
-                self.config = yaml.load(file, Loader=SafeLoader)
-        
-        # 인증 객체 생성
-        self.authenticator = stauth.Authenticate(
-            self.config['credentials'],
-            self.config['cookie']['name'],
-            self.config['cookie']['key'],
-            self.config['cookie']['expiry_days']
-        )
+        # DBManager 객체에서 세션 접근
+        self.db_session = db_manager.session
     
-    def _create_default_config(self) -> Dict[str, Any]:
-        """기본 설정 파일 생성"""
-        hasher = stauth.Hasher()
-        
-        # 환경 변수에서 비밀번호 가져오기
-        admin_pass = os.environ.get("ADMIN_PASS")
-        user_pass = os.environ.get("USER_PASS")
-        
-        config = {
-            'credentials': {
-                'usernames': {
-                    'admin2': {
-                        'email': 'admin@example.com',
-                        'name': '관리자',
-                        'password': hasher.hash(admin_pass),
-                        'role': 'admin'  # 관리자 역할 추가
-                    },
-                    'user_test': {
-                        'email': 'user1@example.com',
-                        'name': '테스트사용자',
-                        'password': hasher.hash(user_pass),
-                        'role': 'user'   # 일반 사용자 역할 추가
-                    }
-                }
-            },
-            'cookie': {
-                'expiry_days': 30,
-                'key': 'some_signature_key',
-                'name': 'llm_dashboard_cookie'
-            }
-        }
-        
-        # 설정 파일 저장
-        with open(self.config_path, 'w', encoding='utf-8') as file:
-            yaml.dump(config, file, default_flow_style=False, allow_unicode=True)
-        
-        return config
-    
-    def save_config(self):
-        """설정 파일 저장"""
-        with open(self.config_path, 'w', encoding='utf-8') as file:
-            yaml.dump(self.config, file, default_flow_style=False, allow_unicode=True)
+    def _hash_password(self, password: str) -> str:
+        """비밀번호 해싱 처리 - bcrypt 직접 사용"""
+        try:
+            import bcrypt
+            return bcrypt.hashpw(password.encode(), bcrypt.gensalt()).decode()
+        except ImportError:
+            # bcrypt가 설치되지 않은 경우 기본 해시 사용 (개발용, 프로덕션에는 권장하지 않음)
+            return hashlib.sha256(password.encode()).hexdigest()
+    # 이전 streamlit_authenticator 사용했을 때    
+    # def _hash_password(self, password: str) -> str:
+    #     """비밀번호 해싱 처리 - streamlit_authenticator와 호환되게 유지"""
+    #     from streamlit_authenticator import Hasher
+    #     hasher = Hasher()
+    #     return hasher.hash(password)
     
     def login(self):
         """로그인 화면 표시 및 처리"""
-        self.authenticator.login()
+        st.header("로그인")
         
-        # 로그인 성공 시 사용자 정보 세션 상태에 저장
-        if st.session_state["authentication_status"]:
-            username = st.session_state["username"]
+        # 세션 상태 초기화
+        if "authentication_status" not in st.session_state:
+            st.session_state["authentication_status"] = False
+        
+        # 로그인 폼
+        with st.form("login_form"):
+            username = st.text_input("사용자 ID")
+            password = st.text_input("비밀번호", type="password")
+            submit = st.form_submit_button("로그인")
             
-            # 사용자 역할 정보 세션에 저장
-            if "user_role" not in st.session_state:
-                user_info = self.config['credentials']['usernames'].get(username, {})
-                st.session_state["user_role"] = user_info.get('role', 'user')
+            if submit:
+                print(f"폼 제출됨: {username}")
+                self._authenticate_user(username, password)
+        
+        # 인증 결과 표시
+        if st.session_state["authentication_status"]:
+            print(f"인증 성공: {st.session_state.get('username')}")
+            st.success(f"{st.session_state.get('username')}님 환영합니다!")
+        elif st.session_state.get("authentication_status") is False:
+            print("인증 실패")
+            st.error("아이디 또는 비밀번호가 잘못되었습니다.")
+    
+    def _authenticate_user(self, username: str, password: str):
+        """사용자 인증 처리 - SQLAlchemy 모델 사용"""
+        if not username or not password:
+            st.session_state["authentication_status"] = False
+            return
+    
+    # 해당 사용자 정보 조회 (SQLAlchemy 모델 사용)
+        from db_models import User
+        user = self.db_session.query(User).filter(User.username == username).first()
+        print(f"사용자 인증 시도: {username}")  # 로그 추가
+        if user:
+            # 비밀번호 검증 (직접 해시 비교)
+            try:
+                stored_password = user.password_hash
+                # streamlit_authenticator의 Hasher는 bcrypt를 사용하므로 bcrypt로 직접 검증
+                import bcrypt
+                # 저장된 해시가 이미 bcrypt 형식이면 직접 체크
+                if stored_password.startswith('$2'):
+                    password_match = bcrypt.checkpw(password.encode(), stored_password.encode())
+                else:
+                    # 그렇지 않으면 간단한 해시 비교 (실제 환경에서는 더 안전한 방법 사용 필요)
+                    hashed_password = hashlib.sha256(password.encode()).hexdigest()
+                    password_match = (hashed_password == stored_password)
+                
+                if password_match:
+                    # 인증 성공
+                    print("인증 성공")
+                    st.session_state["authentication_status"] = True
+                    st.session_state["username"] = user.username
+                    st.session_state["name"] = user.name
+                    st.session_state["user_role"] = user.role
+                    
+                    # 마지막 로그인 시간 업데이트
+                    user.last_login = datetime.datetime.utcnow()
+                    self.db_session.commit()
+                    return
+                else:
+                    print("비밀번호 불일치")
+            except Exception as e:
+                print(f"비밀번호 검증 중 오류: {str(e)}")
+        else:
+            print("사용자 없음")
+        # 인증 실패
+        st.session_state["authentication_status"] = False
     
     def logout(self):
         """로그아웃 버튼 표시"""
-        self.authenticator.logout('로그아웃', 'sidebar')
+        if st.sidebar.button("로그아웃"):
+            for key in ["authentication_status", "username", "name", "user_role"]:
+                if key in st.session_state:
+                    del st.session_state[key]
+            st.rerun()
     
     def is_admin(self) -> bool:
         """현재 사용자가 관리자인지 확인"""
@@ -94,82 +114,146 @@ class UserManager:
     
     def get_current_user(self) -> Dict[str, Any]:
         """현재 로그인한 사용자 정보 반환"""
-        username = st.session_state.get("username")
-        if not username:
+        if not st.session_state.get("authentication_status", False):
             return {}
         
-        user_info = self.config['credentials']['usernames'].get(username, {})
+        # 세션에서 기본 정보 가져오기
+        username = st.session_state.get("username", "")
+        
+        # DB에서 최신 정보 조회 (필요시)
+        from db_models import User
+        user = self.db_session.query(User).filter(User.username == username).first()
+        
+        if user:
+            return {
+                "username": user.username,
+                "name": user.name,
+                "email": user.email,
+                "role": user.role,
+                "created_at": user.created_at,
+                "last_login": user.last_login
+            }
+        
+        # 기본 세션 정보로 폴백
         return {
             "username": username,
-            "name": user_info.get('name', username),
-            "email": user_info.get('email', ''),
-            "role": user_info.get('role', 'user')
+            "name": st.session_state.get("name", ""),
+            "role": st.session_state.get("user_role", "")
         }
     
     def add_user(self, username: str, name: str, email: str, password: str, role: str = 'user') -> bool:
-        """새 사용자 추가 (관리자 전용)"""
-        if username in self.config['credentials']['usernames']:
-            return False  # 이미 존재하는 사용자
-        
-        hasher = stauth.Hasher()
-        
-        # 사용자 정보 추가
-        self.config['credentials']['usernames'][username] = {
-            'email': email,
-            'name': name,
-            'password': hasher.hash(password),
-            'role': role
-        }
-        
-        # 설정 파일 저장
-        self.save_config()
-        return True
+        """새 사용자 추가 - SQLAlchemy 모델 사용"""
+        try:
+            # DB 모델 가져오기
+            from db_models import User
+            
+            # 사용자 존재 여부 확인
+            existing_user = self.db_session.query(User).filter(User.username == username).first()
+            if existing_user:
+                return False  # 이미 존재하는 사용자
+            
+            # 비밀번호 해싱
+            password_hash = self._hash_password(password)
+            
+            # 사용자 추가
+            new_user = User(
+                username=username,
+                name=name,
+                email=email,
+                password_hash=password_hash,
+                role=role,
+                created_at=datetime.datetime.utcnow()
+            )
+            
+            self.db_session.add(new_user)
+            self.db_session.commit()
+            return True
+            
+        except Exception as e:
+            self.db_session.rollback()
+            st.error(f"사용자 추가 중 오류 발생: {e}")
+            return False
     
     def update_user(self, username: str, updates: Dict[str, Any]) -> bool:
-        """사용자 정보 업데이트 (관리자 전용)"""
-        if username not in self.config['credentials']['usernames']:
-            return False  # 존재하지 않는 사용자
-        
-        # 비밀번호 업데이트가 포함된 경우 해싱 처리
-        if 'password' in updates:
-            hasher = stauth.Hasher()
-            updates['password'] = hasher.hash(updates['password'])
-        
-        # 사용자 정보 업데이트
-        for key, value in updates.items():
-            self.config['credentials']['usernames'][username][key] = value
-        
-        # 설정 파일 저장
-        self.save_config()
-        return True
+        """사용자 정보 업데이트 - SQLAlchemy 모델 사용"""
+        try:
+            # DB 모델 가져오기
+            from db_models import User
+            
+            # 사용자 조회
+            user = self.db_session.query(User).filter(User.username == username).first()
+            if not user:
+                return False  # 존재하지 않는 사용자
+            
+            # 업데이트할 필드 처리
+            for key, value in updates.items():
+                if key == 'password':
+                    user.password_hash = self._hash_password(value)
+                elif key in ['name', 'email', 'role']:
+                    setattr(user, key, value)
+            
+            # 변경사항 저장
+            self.db_session.commit()
+            return True
+            
+        except Exception as e:
+            self.db_session.rollback()
+            st.error(f"사용자 업데이트 중 오류 발생: {e}")
+            return False
     
     def delete_user(self, username: str) -> bool:
-        """사용자 삭제 (관리자 전용)"""
-        if username not in self.config['credentials']['usernames']:
-            return False  # 존재하지 않는 사용자
-        
-        # 사용자 정보 삭제
-        del self.config['credentials']['usernames'][username]
-        
-        # 설정 파일 저장
-        self.save_config()
-        return True
+        """사용자 삭제 - SQLAlchemy 모델 사용"""
+        try:
+            # DB 모델 가져오기
+            from db_models import User
+            
+            # 사용자 조회
+            user = self.db_session.query(User).filter(User.username == username).first()
+            if not user:
+                return False  # 존재하지 않는 사용자
+            
+            # 사용자 삭제
+            self.db_session.delete(user)
+            self.db_session.commit()
+            return True
+            
+        except Exception as e:
+            self.db_session.rollback()
+            st.error(f"사용자 삭제 중 오류 발생: {e}")
+            return False
     
     def get_all_users(self) -> List[Dict[str, Any]]:
-        """모든 사용자 목록 조회 (관리자 전용)"""
-        users = []
-        for username, info in self.config['credentials']['usernames'].items():
-            users.append({
-                "username": username,
-                "name": info.get('name', username),
-                "email": info.get('email', ''),
-                "role": info.get('role', 'user')
-            })
-        return users
-
-# 관리자 패널 컴포넌트
+        """모든 사용자 목록 조회 - SQLAlchemy 모델 사용"""
+        try:
+            # DB 모델 가져오기
+            from db_models import User
+            
+            # 모든 사용자 조회
+            users_query = self.db_session.query(User).all()
+            
+            # 결과를 사전 목록으로 변환
+            users = []
+            for user in users_query:
+                users.append({
+                    "username": user.username,
+                    "name": user.name,
+                    "email": user.email,
+                    "role": user.role,
+                    "created_at": user.created_at,
+                    "last_login": user.last_login
+                })
+            return users
+            
+        except Exception as e:
+            st.error(f"사용자 목록 조회 중 오류 발생: {e}")
+            return []
+        
+    
+# 관리자 패널 컴포넌트 (DB 버전)
 def admin_panel(user_manager):
     """관리자 전용 패널 UI 컴포넌트"""
+    import pandas as pd
+    
     st.title("관리자 패널")
     
     tabs = st.tabs(["사용자 관리", "문서 권한 관리", "시스템 설정"])
@@ -216,13 +300,59 @@ def admin_panel(user_manager):
                 else:
                     st.error(f"사용자 '{username_to_delete}'을(를) 삭제할 수 없습니다.")
     
-    # 문서 권한 관리 탭
+    # 문서 권한 관리 탭 (DB 활용)
     with tabs[1]:
         st.subheader("문서 카테고리 권한 관리")
-        st.warning("이 기능은 PostgreSQL과 함께 사용할 때 더 효과적입니다.")
         
-        # 여기에 문서 권한 관리 UI 추가
-        # PostgreSQL이 설정된 경우, 카테고리별로 사용자에게 권한 부여 기능 구현
+        # 카테고리 조회
+        categories = user_manager.db_manager.execute_query(
+            "SELECT DISTINCT category FROM documents", 
+            fetch=True
+        )
+        
+        if categories:
+            category_list = [cat[0] for cat in categories]
+            selected_category = st.selectbox("카테고리 선택", category_list)
+            
+            # 사용자 목록
+            users = user_manager.get_all_users()
+            
+            st.subheader(f"{selected_category} 카테고리 접근 권한")
+            
+            # 권한 관리 UI
+            for user in users:
+                username = user["username"]
+                
+                # 현재 권한 조회
+                has_access = user_manager.db_manager.execute_query(
+                    "SELECT COUNT(*) FROM document_permissions WHERE username = %s AND category = %s",
+                    (username, selected_category),
+                    fetch=True
+                )[0][0] > 0
+                
+                # 권한 토글
+                new_access = st.checkbox(
+                    f"{username} ({user['name']})",
+                    value=has_access,
+                    key=f"perm_{username}_{selected_category}"
+                )
+                
+                # 권한 변경 감지 및 처리
+                if new_access != has_access:
+                    if new_access:
+                        # 권한 추가
+                        user_manager.db_manager.execute_query(
+                            "INSERT INTO document_permissions (username, category) VALUES (%s, %s)",
+                            (username, selected_category)
+                        )
+                    else:
+                        # 권한 제거
+                        user_manager.db_manager.execute_query(
+                            "DELETE FROM document_permissions WHERE username = %s AND category = %s",
+                            (username, selected_category)
+                        )
+        else:
+            st.info("등록된 문서 카테고리가 없습니다.")
     
     # 시스템 설정 탭
     with tabs[2]:
@@ -249,37 +379,3 @@ def admin_panel(user_manager):
         # 시스템 성능 모니터링 추가 (선택적)
         st.subheader("시스템 성능")
         st.info("여기에 시스템 성능 통계를 표시할 수 있습니다.")
-
-# 관리자용 문서 업로드 컴포넌트
-def admin_document_upload(doc_manager):
-    """관리자용 문서 업로드 UI 컴포넌트"""
-    st.header("문서 업로드 (관리자 전용)")
-    
-    # 카테고리 선택 또는 새 카테고리 생성
-    existing_categories = doc_manager.get_available_categories()
-    
-    category_option = st.radio(
-        "카테고리 선택",
-        ["기존 카테고리 사용", "새 카테고리 생성"]
-    )
-    
-    if category_option == "기존 카테고리 사용" and existing_categories:
-        category = st.selectbox("카테고리 선택", options=existing_categories)
-    else:
-        category = st.text_input("새 카테고리 이름")
-    
-    # 문서 설명 추가
-    description = st.text_area("문서 설명 (선택사항)")
-    
-    # 파일 업로드
-    uploaded_files = st.file_uploader(
-        "기업 내부 문서를 업로드하세요", 
-        type=['pdf', 'docx', 'csv', 'pptx'], 
-        accept_multiple_files=True
-    )
-    
-    # 업로드 버튼
-    if uploaded_files and category and st.button("문서 처리 및 임베딩"):
-        return uploaded_files, category, description
-    
-    return None, None, None

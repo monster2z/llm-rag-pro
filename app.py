@@ -73,7 +73,7 @@ LLM_MODEL = st.session_state.get("LLM_MODEL", "gpt-4o-mini")
 LLM_PROVIDER = "openai"  # 또는 "anthropic"
 
 # 임시 데이터 저장 디렉토리
-DATA_DIR = "./data"
+DATA_DIR = "./db/document"
 os.makedirs(DATA_DIR, exist_ok=True)
 
 # 페이지 설정
@@ -124,10 +124,13 @@ class AgentState(TypedDict):
 # PostgreSQL 연결 설정 (옵션)
 def setup_database_connector():
     """데이터베이스 연결 설정"""
+    print("데이터베이스 연결 시도")
+
     try:
         # DBManager 초기화
         db_manager = DBManager()
-        
+        print("DB 연결 성공, 기본 계정 생성 시작")
+
         # 기본 관리자 및 사용자 계정 생성
         db_manager.create_default_admin()
         db_manager.create_default_user()
@@ -499,8 +502,13 @@ def load_vectorstores():
 # 앱 초기화 함수
 def initialize_app():
     """앱 초기화 및 세션 상태 설정"""
-    # 데이터베이스 연결 설정
-    db_manager = setup_database_connector()
+    # 데이터베이스 연결은 한 번만 설정
+    if "db_manager" not in st.session_state:
+        print("앱 초기화 시작")
+        db_manager = setup_database_connector()
+        st.session_state.db_manager = db_manager
+    else:
+        db_manager = st.session_state.db_manager
     
     # 사용자 관리자 초기화
     if "user_manager" not in st.session_state:
@@ -514,11 +522,11 @@ def initialize_app():
     if "conversation_manager" not in st.session_state:
         st.session_state.conversation_manager = ConversationManager(db_manager)
     
-    # 벡터 저장소 로드
+    # 벡터 저장소 로드 (아직 로드되지 않은 경우에만)
     if "vectorstore" not in st.session_state:
         st.session_state.vectorstore = load_vectorstores()
         
-        # RAG 워크플로우 생성
+        # RAG 워크플로우 생성 (벡터스토어가 있는 경우에만)
         if st.session_state.vectorstore:
             st.session_state.rag_workflow = create_rag_workflow()
 
@@ -569,6 +577,7 @@ def main():
         st.session_state["authentication_status"] = False
     
     try:
+        print("로그인 시도")
         st.session_state.user_manager.login()
     except Exception as e:
         st.error(f"로그인 처리 중 오류가 발생했습니다: {str(e)}")
@@ -577,6 +586,7 @@ def main():
         st.session_state["username"] = "user_test"
         st.session_state["name"] = "테스트사용자"
         st.session_state["user_role"] = "user"
+        print(f"로그인 오류: {str(e)}")
     
     # 로그인 상태에 따른 화면 전환
     if st.session_state["authentication_status"]:

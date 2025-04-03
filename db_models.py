@@ -153,6 +153,7 @@ class UsageStat(Base):
 
 # 데이터베이스 연결 및 초기화 함수
 def init_db():
+    print("init_db 시작")
     """PostgreSQL 데이터베이스 연결 및 테이블 초기화"""
     db_host = os.environ.get("DB_HOST")
     db_port = os.environ.get("DB_PORT")
@@ -164,9 +165,11 @@ def init_db():
     db_url = f"postgresql://{db_user}:{db_password}@{db_host}:{db_port}/{db_name}"
     
     # 엔진 생성
+    # print(f"DB URL: {db_url}로 엔진 생성")
     engine = create_engine(db_url)
     
     # 세션 생성
+    print("세션 생성 성공")
     Session = sessionmaker(bind=engine)
     session = Session()
     
@@ -177,7 +180,7 @@ def init_db():
         session.commit()
         
         # 테이블 생성 (순서 중요)
-        Base.metadata.drop_all(engine)  # 기존 테이블 삭제
+        # Base.metadata.drop_all(engine)  # 기존 테이블 삭제
         Base.metadata.create_all(engine)  # 새 테이블 생성
         
         return engine, session
@@ -190,6 +193,7 @@ class DBManager:
     """데이터베이스 관리 클래스"""
     
     def __init__(self, engine=None, session=None):
+        print("DBManager 초기화 시작")
         if engine is None or session is None:
             self.engine, self.session = init_db()
         else:
@@ -389,6 +393,7 @@ if __name__ == "__main__":
     
     # 데이터베이스 초기화
     try:
+        print("데이터베이스 초기화 시작")
         engine, session = init_db()
         
         # 기본 관리자 및 사용자 생성
