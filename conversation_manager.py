@@ -280,44 +280,60 @@ def chat_interface(conversation_manager, username, conversation_id, generate_res
     # 현재 대화의 메시지 가져오기
     messages = conversation_manager.get_conversation_messages(username, conversation_id)
     
-    # 메시지 표시
-    for message in messages:
-        with st.chat_message(message["role"]):
-            st.markdown(message["content"])
+    # 메시지 컨테이너 생성
+    message_container = st.container()
     
-    # 사용자 입력
+    # 입력창을 메시지 컨테이너 아래에 배치
     prompt = st.chat_input("메시지를 입력하세요...")
+    
+    # 메시지 표시 (메시지 컨테이너 내부)
+    with message_container:
+        for message in messages:
+            with st.chat_message(message["role"]):
+                st.markdown(message["content"])
     
     # 입력 처리
     if prompt:
         # 사용자 메시지 추가
         conversation_manager.add_message(conversation_id, "user", prompt)
         
-        with st.chat_message("user"):
-            st.markdown(prompt)
-        
-        # 어시스턴트 응답
-        with st.chat_message("assistant"):
-            message_placeholder = st.empty()
+        # 스크롤을 위해 메시지 컨테이너 다시 사용
+        with message_container:
+            with st.chat_message("user"):
+                st.markdown(prompt)
             
-            with st.spinner("응답 생성 중..."):
-                # 응답 생성 함수 호출
-                response = generate_response_func(prompt, username, conversation_id)
-            
-            message_placeholder.markdown(response)
+            # 어시스턴트 응답
+            with st.chat_message("assistant"):
+                message_placeholder = st.empty()
+                
+                with st.spinner("응답 생성 중..."):
+                    # 응답 생성 함수 호출
+                    response = generate_response_func(prompt, username, conversation_id)
+                
+                message_placeholder.markdown(response)
         
         # 어시스턴트 메시지 저장
         conversation_manager.add_message(conversation_id, "assistant", response)
         
         # 스크롤 최하단으로 이동하기 위한 JavaScript 실행
-        st.write(
-            """
-            <script>
-                window.scrollTo(0, document.body.scrollHeight);
-            </script>
-            """,
-            unsafe_allow_html=True
-        )
+        js_code = """
+        <script>
+            function scrollToBottom() {
+                const mainContainer = document.querySelector('.main');
+                if (mainContainer) {
+                    mainContainer.scrollTop = mainContainer.scrollHeight;
+                }
+            }
+            
+            // 페이지 로드 후 실행
+            window.addEventListener('load', scrollToBottom);
+            
+            // 약간의 지연을 두고 한 번 더 실행 (콘텐츠가 완전히 로드된 후)
+            setTimeout(scrollToBottom, 500);
+        </script>
+        """
+        
+        st.markdown(js_code, unsafe_allow_html=True)
 
 # 문서 트리 컴포넌트
 def document_tree_view(doc_manager, selected_category=None):
@@ -331,11 +347,12 @@ def document_tree_view(doc_manager, selected_category=None):
         st.info("등록된 문서가 없습니다. 관리자에게 문서 등록을 요청하세요.")
         return None, None
     
-    # 카테고리 선택 (사이드바)
+    # 카테고리 선택 (고유 키 추가)
     if not selected_category:
         selected_category = st.selectbox(
             "카테고리 선택", 
-            options=categories
+            options=categories,
+            key="category_select_tree_view_key"  # 고유 키 추가
         )
     
     st.subheader(f"{selected_category} 카테고리 문서")
@@ -346,7 +363,8 @@ def document_tree_view(doc_manager, selected_category=None):
     # 문서를 파일명으로 그룹화하여 버전별로 표시
     grouped_docs = {}
     for doc in documents:
-        filename = doc["filename"]
+        # SQLAlchemy 모델의 속성에 직접 접근
+        filename = doc.filename if hasattr(doc, 'filename') else "Unknown"
         if filename not in grouped_docs:
             grouped_docs[filename] = []
         grouped_docs[filename].append(doc)
@@ -357,33 +375,42 @@ def document_tree_view(doc_manager, selected_category=None):
     # 각 문서 그룹 표시
     for filename, docs in grouped_docs.items():
         # 버전별 정렬
-        docs.sort(key=lambda x: x["version"], reverse=True)
+        docs.sort(key=lambda x: x.version if hasattr(x, 'version') else 0, reverse=True)
         
         # 파일명과 최신 버전 표시
-        st.markdown(f"### 📄 {filename} (v{docs[0]['version']})")
+        doc_version = docs[0].version if hasattr(docs[0], 'version') else "?"
+        st.markdown(f"### 📄 {filename} (v{doc_version})")
         
         # 설명 표시 (있는 경우)
-        if "description" in docs[0] and docs[0]["description"]:
-            st.markdown(f"*{docs[0]['description']}*")
+        doc_description = docs[0].description if hasattr(docs[0], 'description') else ""
+        if doc_description:
+            st.markdown(f"*{doc_description}*")
         
-        # 최신 버전 문서 선택 버튼
-        if st.button(f"이 문서 내용 보기", key=f"view_{docs[0]['doc_id']}"):
-            selected_doc_id = docs[0]["doc_id"]
+        # 최신 버전 문서 선택 버튼 (고유 키 추가)
+        doc_id = docs[0].doc_id if hasattr(docs[0], 'doc_id') else ""
+        button_key = f"view_btn_{doc_id}"  # 고유 키 생성
+        if st.button(f"이 문서 내용 보기", key=button_key):
+            selected_doc_id = doc_id
         
         # 이전 버전 확장 섹션
         if len(docs) > 1:
-            with st.expander(f"이전 버전 ({len(docs)-1}개)"):
-                for doc in docs[1:]:
+            expander_key = f"expander_{filename}"  # 고유 키 생성
+            with st.expander(f"이전 버전 ({len(docs)-1}개)", key=expander_key):
+                for i, doc in enumerate(docs[1:]):
                     col1, col2 = st.columns([0.8, 0.2])
                     with col1:
-                        st.write(f"v{doc['version']} - {doc['upload_time']}")
+                        doc_version = doc.version if hasattr(doc, 'version') else "?"
+                        doc_upload_time = doc.upload_time if hasattr(doc, 'upload_time') else ""
+                        st.write(f"v{doc_version} - {doc_upload_time}")
                     with col2:
-                        if st.button("보기", key=f"view_{doc['doc_id']}"):
-                            selected_doc_id = doc["doc_id"]
+                        doc_id = doc.doc_id if hasattr(doc, 'doc_id') else ""
+                        old_ver_button_key = f"view_old_{doc_id}_{i}"  # 고유 키 생성
+                        if st.button("보기", key=old_ver_button_key):
+                            selected_doc_id = doc_id
     
     return selected_category, selected_doc_id
 
-# 선택된 문서 내용 표시 컴포넌트
+# conversation_manager.py 파일의 display_document_content 함수 수정
 def display_document_content(doc_manager, doc_id):
     """선택된 문서의 내용을 표시하는 컴포넌트"""
     if not doc_id:
@@ -402,25 +429,57 @@ def display_document_content(doc_manager, doc_id):
     st.write(f"**업로드 날짜:** {doc_info['upload_time']}")
     
     # 문서 내용 표시 - 벡터스토어에서 청크 검색
-    if "vectorstore" in st.session_state:
+    if "vectorstore" in st.session_state and st.session_state.vectorstore:
         vectorstore = st.session_state.vectorstore
         
-        # 벡터 저장소에서 문서 청크 검색
-        docs = vectorstore.similarity_search(
-            f"filename:{doc_info['filename']} category:{doc_info['category']} version:{doc_info['version']}",
-            k=100  # 더 많은 청크 검색
-        )
-        
-        if docs:
-            # 청크들을 표시
-            st.subheader("문서 내용 미리보기")
+        try:
+            # 벡터 저장소에서 문서 청크 검색 - 수정된 부분
+            # 메타데이터 검색을 위한 조건 수정
+            search_query = f"document: {doc_info['filename']}"
             
-            with st.expander("문서 청크 보기", expanded=True):
-                for i, chunk in enumerate(docs):
-                    st.markdown(f"**청크 {i+1}:**")
-                    st.markdown(chunk.page_content)
-                    st.divider()
-        else:
-            st.info("이 문서의 내용을 찾을 수 없습니다.")
+            # 필터링 조건으로 검색
+            docs = vectorstore.similarity_search(
+                search_query,
+                k=100,  # 더 많은 청크 검색
+                filter={"doc_id": doc_info['doc_id']}  # 문서 ID로 필터링
+            )
+            
+            if docs:
+                # 청크들을 표시
+                st.subheader("문서 내용 미리보기")
+                
+                with st.expander("문서 청크 보기", expanded=True):
+                    for i, chunk in enumerate(docs):
+                        st.markdown(f"**청크 {i+1}:**")
+                        st.markdown(chunk.page_content)
+                        st.divider()
+            else:
+                # 필터가 작동하지 않는 경우 대체 검색 방법 시도
+                st.info("문서 ID 필터링으로 청크를 찾을 수 없습니다. 파일명으로 검색합니다.")
+                
+                # 파일명으로 검색 시도
+                docs = vectorstore.similarity_search(
+                    doc_info['filename'],
+                    k=100  # 더 많은 청크 검색
+                )
+                
+                # 검색 결과에서 해당 문서 ID를 가진 문서만 필터링
+                filtered_docs = [doc for doc in docs if doc.metadata.get('doc_id') == doc_info['doc_id']]
+                
+                if filtered_docs:
+                    # 청크들을 표시
+                    st.subheader("문서 내용 미리보기")
+                    
+                    with st.expander("문서 청크 보기", expanded=True):
+                        for i, chunk in enumerate(filtered_docs):
+                            st.markdown(f"**청크 {i+1}:**")
+                            st.markdown(chunk.page_content)
+                            st.divider()
+                else:
+                    st.info("이 문서의 내용을 찾을 수 없습니다. 문서가 제대로 임베딩되었는지 확인하세요.")
+                
+        except Exception as e:
+            st.error(f"문서 청크 검색 중 오류가 발생했습니다: {str(e)}")
+            st.info("이 오류는 벡터 저장소의 검색 방식과 관련이 있을 수 있습니다. 관리자에게 문의하세요.")
     else:
         st.warning("벡터 저장소가 아직 초기화되지 않았습니다.")

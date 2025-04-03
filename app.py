@@ -111,6 +111,8 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
+
+
 # LangGraph 상태 정의
 class AgentState(TypedDict):
     question: str
@@ -154,9 +156,9 @@ def get_loader(file_path, file_type):
     else:
         raise ValueError(f"지원하지 않는 파일 형식: {file_type}")
 
-# 문서 처리 및 임베딩 함수
+# 문서 처리 및 임베딩 함수 - 2차 수정, 히스토리 및 버전 관리 개선
 def process_documents(uploaded_files, category=None, description=None, username=None):
-    """문서 처리 및 임베딩"""
+    """문서 처리 및 임베딩 - 버전 관리 개선"""
     documents = []
     file_info = []
     text_splitter = RecursiveCharacterTextSplitter(
@@ -167,6 +169,28 @@ def process_documents(uploaded_files, category=None, description=None, username=
     for uploaded_file in uploaded_files:
         # 파일 확장자 추출
         file_type = uploaded_file.name.split('.')[-1].lower()
+        filename = uploaded_file.name
+        
+        # 기존 문서 확인 - 동일 파일명의 문서가 있는지 체크
+        existing_version = 0
+        existing_doc_id = None
+        
+        if "document_manager" in st.session_state:
+            # 카테고리별 문서 가져오기
+            category_docs = st.session_state.document_manager.get_documents_by_category(
+                category or "기타"
+            )
+            
+            # 동일 파일명 체크
+            for doc in category_docs:
+                if hasattr(doc, 'filename') and doc.filename == filename:
+                    # 기존 문서 중 가장 높은 버전 찾기
+                    if hasattr(doc, 'version') and doc.version > existing_version:
+                        existing_version = doc.version
+                        existing_doc_id = doc.doc_id if hasattr(doc, 'doc_id') else None
+        
+        # 버전 설정 (기존 문서가 있으면 버전 증가)
+        new_version = existing_version + 1
         
         # 임시 파일로 저장
         with tempfile.NamedTemporaryFile(delete=False, suffix=f'.{file_type}') as temp_file:
@@ -191,11 +215,11 @@ def process_documents(uploaded_files, category=None, description=None, username=
             for doc in split_documents:
                 if not doc.metadata:
                     doc.metadata = {}
-                doc.metadata["source_file"] = uploaded_file.name
+                doc.metadata["source_file"] = filename
                 doc.metadata["file_type"] = file_type
                 doc.metadata["category"] = category or "기타"
                 doc.metadata["doc_id"] = doc_id
-                doc.metadata["version"] = 1  # 문서 버전 정보
+                doc.metadata["version"] = new_version
                 # 업로더 정보 추가 (사용자별 문서 관리를 위해)
                 doc.metadata["uploaded_by"] = username or st.session_state.get("username", "system")
             
@@ -204,10 +228,10 @@ def process_documents(uploaded_files, category=None, description=None, username=
             # 문서 메타데이터 생성
             metadata = {
                 "doc_id": doc_id,
-                "filename": uploaded_file.name,
+                "filename": filename,
                 "file_type": file_type,
                 "category": category or "기타",
-                "version": 1,  # 초기 버전
+                "version": new_version,
                 "chunks": len(split_documents),
                 "uploaded_by": username or st.session_state.get("username", "system"),
                 "upload_time": time.strftime("%Y-%m-%d %H:%M:%S"),
@@ -221,8 +245,27 @@ def process_documents(uploaded_files, category=None, description=None, username=
             # 문서 관리자에 메타데이터 추가
             if "document_manager" in st.session_state:
                 st.session_state.document_manager.add_document(metadata)
+                
+                # 업데이트인 경우 버전 로그 생성
+                if existing_version > 0 and existing_doc_id:
+                    change_desc = f"새 버전 업로드 - {description or '설명 없음'}"
+                    st.session_state.document_manager.create_document_version_log(
+                        doc_id=doc_id,
+                        previous_version=existing_version,
+                        new_version=new_version,
+                        change_description=change_desc,
+                        changed_by=username or st.session_state.get("username", "system")
+                    )
+                    
+                    # 이전 버전 비활성화 (옵션)
+                    st.session_state.document_manager.update_document_status(existing_doc_id, is_active=False)
             
-            st.sidebar.success(f"{uploaded_file.name} 처리 완료 - {len(split_documents)}개 청크 생성")
+            # 버전 정보 표시
+            if existing_version > 0:
+                st.sidebar.success(f"{uploaded_file.name} 처리 완료 - 버전 {new_version}로 업데이트됨, {len(split_documents)}개 청크 생성")
+            else:
+                st.sidebar.success(f"{uploaded_file.name} 처리 완료 - {len(split_documents)}개 청크 생성")
+                
         except Exception as e:
             st.sidebar.error(f"{uploaded_file.name} 처리 중 오류 발생: {str(e)}")
         finally:
@@ -270,7 +313,6 @@ def process_documents(uploaded_files, category=None, description=None, username=
         
         return vectorstore, file_info
     return None, []
-
 # LangGraph 노드 함수들
 
 # 문서 검색 함수
@@ -357,17 +399,28 @@ def generate_answer(state: AgentState) -> AgentState:
 # 소스 정보 추가 함수
 def add_source_information(state: AgentState) -> AgentState:
     """답변에 소스 정보를 추가하는 함수"""
-    if not state["sources"]:
-        return state
+    if not state.get("sources") or len(state["sources"]) == 0:
+        # 소스가 없는 경우 일반 정보 추가
+        enhanced_answer = state["answer"] + "\n\n*참고: 보다 구체적이고 정확한 답변을 위해서는 관련 문서가 필요합니다.*"
+        return {**state, "answer": enhanced_answer}
         
     sources_info = "\n\n**참고 문서:**\n"
     for src in state["sources"]:
-        sources_info += f"- {src['source']}"
-        if src['page'] != "N/A":
-            sources_info += f" (페이지: {src['page']})"
-        if 'category' in src and src['category']:
-            sources_info += f" [카테고리: {src['category']}]"
-        sources_info += "\n"
+        # 딕셔너리 형태로 오는 경우
+        if isinstance(src, dict):
+            source = src.get('source', 'Unknown')
+            page = src.get('page', 'N/A')
+            category = src.get('category', '')
+            
+            sources_info += f"- {source}"
+            if page != "N/A":
+                sources_info += f" (페이지: {page})"
+            if category:
+                sources_info += f" [카테고리: {category}]"
+            sources_info += "\n"
+        # 문자열이나 다른 형태로 오는 경우
+        else:
+            sources_info += f"- {str(src)}\n"
     
     enhanced_answer = state["answer"] + sources_info
     
@@ -395,7 +448,7 @@ def create_rag_workflow():
     # 그래프 컴파일
     return workflow.compile()
 
-# 응답 생성 함수
+# 응답 생성 함수 개선
 def generate_response(prompt, username, conversation_id):
     """사용자 질문에 대한 응답 생성"""
     # 대화 기록 가져오기
@@ -409,8 +462,11 @@ def generate_response(prompt, username, conversation_id):
     else:
         conversation_history = []
     
-    # LangGraph 워크플로우가 설정되어 있으면 해당 워크플로우 사용
-    if 'rag_workflow' in st.session_state and 'vectorstore' in st.session_state:
+    # 벡터 스토어 상태 확인
+    has_vectorstore = "vectorstore" in st.session_state and st.session_state.vectorstore is not None
+    
+    # LangGraph 워크플로우가 설정되어 있고 벡터 스토어가 있으면 RAG 사용
+    if has_vectorstore and 'rag_workflow' in st.session_state:
         try:
             # 초기 상태 설정
             initial_state = {
@@ -425,6 +481,9 @@ def generate_response(prompt, username, conversation_id):
             
             # 워크플로우 실행
             result = st.session_state.rag_workflow.invoke(initial_state)
+            
+            # 디버그 로그
+            print(f"RAG 결과: {result.get('sources', [])} 소스 찾음")
             
             # 답변 반환
             return result["answer"]
@@ -455,14 +514,20 @@ def generate_response(prompt, username, conversation_id):
         chain = prompt_template | llm | StrOutputParser()
         
         try:
-            return chain.invoke({
+            response = chain.invoke({
                 "question": prompt,
                 "conversation_history": str(conversation_history)
             })
+            
+            # 문서가 없을 때 안내 메시지 추가
+            if not has_vectorstore:
+                response += "\n\n*참고: 보다 구체적이고 정확한 답변을 위해서는 관련 문서가 필요합니다.*"
+            
+            return response
         except Exception as e:
             st.error(f"LLM 응답 생성 중 오류: {str(e)}")
             return "죄송합니다. 응답 생성 중 오류가 발생했습니다. 나중에 다시 시도해주세요."
-
+        
 # 벡터 저장소 로드 함수
 def load_vectorstores():
     """모든 문서의 벡터 저장소 로드 및 통합"""
@@ -483,7 +548,9 @@ def load_vectorstores():
     
     # 각 문서의 벡터 저장소 로드 및 통합
     for doc in documents:
-        vector_path = doc.get("vector_store_path")
+        # SQLAlchemy 모델의 속성에 직접 접근
+        vector_path = doc.vector_store_path if hasattr(doc, 'vector_store_path') else None
+        
         if vector_path and os.path.exists(vector_path):
             try:
                 # 벡터 저장소 로드
@@ -495,9 +562,85 @@ def load_vectorstores():
                     # 벡터 저장소 병합
                     combined_vectorstore.merge_from(doc_vectorstore)
             except Exception as e:
-                st.warning(f"문서 '{doc['filename']}' 벡터 저장소 로드 실패: {str(e)}")
+                filename = doc.filename if hasattr(doc, 'filename') else "알 수 없음"
+                st.warning(f"문서 '{filename}' 벡터 저장소 로드 실패: {str(e)}")
     
     return combined_vectorstore
+
+def check_vectorstore_status():
+    """벡터 저장소 상태 확인 및 메시지 반환"""
+    if "vectorstore" in st.session_state and st.session_state.vectorstore is not None:
+        # 벡터 스토어의 총 문서 수 확인
+        try:
+            doc_count = len(st.session_state.vectorstore.docstore._dict)
+            if doc_count > 0:
+                return True, f"문서가 임베딩되었습니다. {doc_count}개의 문서 청크가 검색 가능합니다."
+        except Exception as e:
+            print(f"벡터 스토어 확인 중 오류: {str(e)}")
+            
+    return False, "아직 업로드된 문서가 없습니다. 일반적인 지식을 기반으로 답변합니다. 더 정확한 답변을 위해 관리자에게 문서 업로드를 요청하세요."
+
+# app.py에 상단 스타일 및 고정 헤더 추가
+def add_fixed_header_style():
+    """상단 고정 헤더를 위한 CSS 스타일 추가"""
+    st.markdown("""
+    <style>
+        /* 상단 고정 헤더 스타일 */
+        .fixed-header {
+            position: sticky;
+            top: 0;
+            background-color: white;
+            z-index: 999;
+            padding: 10px 0;
+            border-bottom: 1px solid #e6e6e6;
+            width: 100%;
+            margin-bottom: 1rem;
+        }
+        
+        /* 구분선 스타일 */
+        .divider {
+            border-bottom: 1px solid #e6e6e6;
+            margin: 10px 0;
+            width: 100%;
+        }
+        
+        /* 콘텐츠 영역 패딩 */
+        .content-area {
+            padding-top: 80px;  /* 헤더 높이에 맞게 조정 */
+        }
+        
+        /* 선택된 탭 강조 */
+        .stTabs [aria-selected="true"] {
+            background-color: #f0f2f6;
+            border-bottom: 2px solid #4e8cff;
+            font-weight: bold;
+        }
+        
+        /* 대화 컨테이너 최대 높이 설정 */
+        .chat-container {
+            max-height: 70vh;
+            overflow-y: auto;
+            padding: 10px;
+            border-radius: 5px;
+        }
+        
+        /* 탭 고정 스타일 */
+        .fixed-tabs {
+            position: sticky;
+            top: 0;
+            z-index: 998;
+            background-color: white;
+            padding-bottom: 1px;
+            border-bottom: 1px solid #f0f2f6;
+            margin-bottom: 10px;
+        }
+        
+        /* 탭 컨테이너 바로 밑의 내용에 대한 마진 */
+        .stTabs + div {
+            margin-top: 20px;
+        }
+    </style>
+    """, unsafe_allow_html=True)
 
 # 앱 초기화 함수
 def initialize_app():
@@ -522,8 +665,8 @@ def initialize_app():
     if "conversation_manager" not in st.session_state:
         st.session_state.conversation_manager = ConversationManager(db_manager)
     
-    # 벡터 저장소 로드 (아직 로드되지 않은 경우에만)
-    if "vectorstore" not in st.session_state:
+     # 벡터 저장소 로드 - 로그인 후에만 필요
+    if "vectorstore" not in st.session_state and st.session_state.get("authentication_status") == True:
         st.session_state.vectorstore = load_vectorstores()
         
         # RAG 워크플로우 생성 (벡터스토어가 있는 경우에만)
@@ -565,48 +708,103 @@ def performance_tips():
 def main():
     """메인 앱 함수"""
     # 성능 팁 페이지 (URL 파라미터로 접근)
-    if "tips" in st.query_params:
+    params = st.query_params
+    if "tips" in params:
         performance_tips()
         return
+
+    # URL 파라미터에서 폼 초기화 여부 확인
+    if "clear_form" in st.query_params:
+        # 쿼리 파라미터 제거
+        st.query_params.clear()
+        # 만약 로그인에 실패했다면 폼 값 초기화
+        if not st.session_state.get("authentication_status", False):
+            # 폼 관련 세션 상태 초기화
+            if "form_username" in st.session_state:
+                del st.session_state.form_username
+            if "form_password" in st.session_state:
+                del st.session_state.form_password
 
     # 앱 초기화
     initialize_app()
     
-    # 사용자 인증
-    if "authentication_status" not in st.session_state:
-        st.session_state["authentication_status"] = False
+    # 고정 헤더용 스타일 추가
+    add_fixed_header_style()
     
-    try:
-        print("로그인 시도")
-        st.session_state.user_manager.login()
-    except Exception as e:
-        st.error(f"로그인 처리 중 오류가 발생했습니다: {str(e)}")
-        st.info("기본 사용자로 로그인합니다.")
-        st.session_state["authentication_status"] = True
-        st.session_state["username"] = "user_test"
-        st.session_state["name"] = "테스트사용자"
-        st.session_state["user_role"] = "user"
-        print(f"로그인 오류: {str(e)}")
+    # 사용자 인증 상태 확인
+    if "authentication_status" not in st.session_state:
+        st.session_state["authentication_status"] = None  # None으로 초기화
     
     # 로그인 상태에 따른 화면 전환
-    if st.session_state["authentication_status"]:
+    if st.session_state.get("authentication_status") != True:
+        # 로그인되지 않은 경우에만 로그인 폼 표시
+        try:
+            print("로그인 시도")
+            st.session_state.user_manager.login()
+        except Exception as e:
+            st.error(f"로그인 처리 중 오류가 발생했습니다: {str(e)}")
+            st.info("기본 사용자로 로그인합니다.")
+            st.session_state["authentication_status"] = True
+            st.session_state["username"] = "user_test"
+            st.session_state["name"] = "테스트사용자"
+            st.session_state["user_role"] = "user"
+            print(f"로그인 오류: {str(e)}")
+            st.rerun()  # 로그인 성공 시 페이지 새로고침
+    
+    # 로그인 상태인 경우 메인 인터페이스 표시
+    if st.session_state.get("authentication_status") == True:
         # 현재 사용자 정보
         username = st.session_state["username"]
         is_admin = st.session_state.user_manager.is_admin()
         
-        st.sidebar.title(f'{st.session_state["name"]} 님 환영합니다')
-        st.sidebar.write(f"역할: {'관리자' if is_admin else '일반 사용자'}")
+         # 고정 헤더 컨테이너
+        with st.container():
+            st.markdown('<div class="fixed-header">', unsafe_allow_html=True)
+            
+            # 사용자 정보 표시
+            col1, col2 = st.columns([3, 1])
+            with col1:
+                st.title(f"기업 내부용 AI 어시스턴트")
+            with col2:
+                st.write(f"사용자: {st.session_state['name']} ({st.session_state.get('user_role', '일반')})")
+            
+            # 구분선
+            st.markdown('<div class="divider"></div>', unsafe_allow_html=True)
+            st.markdown('</div>', unsafe_allow_html=True)  # 고정 헤더 닫기
+            
+            # 기존 사이드바 정보 유지
+            st.sidebar.title(f'{st.session_state["name"]} 님 환영합니다')
+            st.sidebar.write(f"역할: {'관리자' if is_admin else '일반 사용자'}")
         
-        # 화면 선택 탭
+        # 탭을 고정 스타일로 감싸기
+        st.markdown('<div class="fixed-tabs">', unsafe_allow_html=True)
         tabs = st.tabs(["대화하기", "문서 탐색", "설정"])
+        st.markdown('</div>', unsafe_allow_html=True)
         
         # 대화하기 탭
         with tabs[0]:
-            # 업로드된 문서가 없는 경우 알림
-            if "vectorstore" not in st.session_state or st.session_state.vectorstore is None:
-                st.info("아직 업로드된 문서가 없습니다. 일반적인 지식을 기반으로 답변합니다. 더 정확한 답변을 위해 관리자에게 문서 업로드를 요청하세요.")
-            else:
-                st.success("문서가 임베딩되었습니다. 기업 내부 문서를 기반으로 질문에 답변합니다.")
+            # 문서 상태 확인 및 문서 목록 표시
+            col1, col2 = st.columns([2, 1])
+            
+            with col1:
+                # 업로드된 문서가 없는 경우 알림
+                has_docs, status_message = check_vectorstore_status()
+                if has_docs:
+                    st.success(status_message)
+                else:
+                    st.info(status_message)         
+                       
+            with col2:
+                if "document_manager" in st.session_state:
+                    # 문서 목록 표시 (간략하게)
+                    available_docs = st.session_state.document_manager.get_all_active_documents()
+                    if available_docs:
+                        with st.expander("업로드된 문서 목록", expanded=False):
+                            for doc in available_docs[:10]:  # 최대 10개만 표시
+                                if hasattr(doc, 'filename') and hasattr(doc, 'category'):
+                                    st.write(f"📄 {doc.filename} ({doc.category})")
+                            if len(available_docs) > 10:
+                                st.write(f"...외 {len(available_docs)-10}개 더 있음")
             
             # 사이드바 - 대화 목록 영역
             current_conv_id = editable_conversation_list(
@@ -623,7 +821,8 @@ def main():
                 uploaded_files = st.sidebar.file_uploader(
                     "기업 내부 문서를 업로드하세요", 
                     type=['pdf', 'docx', 'csv', 'pptx'], 
-                    accept_multiple_files=True
+                    accept_multiple_files=True,
+                    key="upload_files_key"  # 고유 키 추가
                 )
                 
                 # 카테고리 선택 또는 생성
@@ -631,22 +830,34 @@ def main():
                 category_option = st.sidebar.radio(
                     "카테고리", 
                     ["기존 카테고리 사용", "새 카테고리 생성"],
-                    horizontal=True
+                    horizontal=True,
+                    key="category_option_key"  # 고유 키 추가
                 )
                 
                 if category_option == "기존 카테고리 사용" and existing_categories:
                     selected_category = st.sidebar.selectbox(
                         "카테고리 선택", 
-                        options=existing_categories
+                        options=existing_categories,
+                        key="sidebar_category_select_key"  # 고유 키 추가
                     )
                 else:
-                    selected_category = st.sidebar.text_input("새 카테고리 이름")
+                    selected_category = st.sidebar.text_input(
+                        "새 카테고리 이름",
+                        key="new_category_name_key"  # 고유 키 추가
+                    )
                 
                 # 문서 설명 추가
-                description = st.sidebar.text_area("문서 설명 (선택사항)", height=100)
+                description = st.sidebar.text_area(
+                    "문서 설명 (선택사항)", 
+                    height=100,
+                    key="doc_description_key"  # 고유 키 추가
+                )
                 
                 # 파일 처리 버튼
-                if uploaded_files and st.sidebar.button("문서 처리 및 임베딩"):
+                if uploaded_files and st.sidebar.button(
+                    "문서 처리 및 임베딩",
+                    key="process_docs_button_key"  # 고유 키 추가
+                ):
                     with st.spinner("문서 처리 중..."):
                         vectorstore, file_info = process_documents(
                             uploaded_files, 
@@ -677,9 +888,32 @@ def main():
                 current_conv_id,
                 generate_response
             )
+        
+        # 문서 탐색 탭
+        with tabs[1]:
+            if "document_manager" in st.session_state:
+                # 새로 정의한 개선된 문서 탐색 컴포넌트 사용
+                if 'document_explorer' in globals():
+                    document_explorer(st.session_state.document_manager)
+                else:
+                    # 기존 문서 탐색 기능 사용
+                    selected_category, selected_doc_id = document_tree_view(st.session_state.document_manager)
+                    if selected_doc_id:
+                        display_document_content(st.session_state.document_manager, selected_doc_id)
+            else:
+                st.info("문서 관리자가 초기화되지 않았습니다.")
+        
+        # 설정 탭
+        with tabs[2]:
+            st.title("설정")
+            
+            # 관리자인 경우 관리자 패널 표시
+            if is_admin and st.session_state.user_manager:
+                admin_panel(st.session_state.user_manager)
+            else:
+                st.info("관리자만 접근할 수 있는 페이지입니다.")
     
-    # 로그아웃 버튼은 로그인 상태일 때만 표시
-    if st.session_state["authentication_status"]:
+        # 로그아웃 버튼은 로그인 상태일 때만 표시
         st.session_state.user_manager.logout()
 
 if __name__ == "__main__":

@@ -377,6 +377,25 @@ class DBManager:
         self.session.commit()
         return log
     
+    def execute_query(self, query, params=None, fetch=False):
+        """SQL 쿼리 실행"""
+        try:
+            if params:
+                result = self.session.execute(text(query), params)
+            else:
+                result = self.session.execute(text(query))
+            
+            if fetch:
+                return result.fetchall()
+            else:
+                self.session.commit()
+                return result.rowcount
+        except Exception as e:
+            self.session.rollback()
+            print(f"쿼리 실행 중 오류: {str(e)}")
+            raise e
+    
+    
     def close(self):
         """세션 종료"""
         self.session.close()
