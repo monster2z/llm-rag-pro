@@ -160,6 +160,7 @@ class DocumentManager:
         except Exception as e:
             print(f"문서 상태 업데이트 중 오류 발생: {str(e)}")
             return False
+    
     def delete_document(self, doc_id: str, permanently: bool = False) -> bool:
         """문서 삭제 - permanently가 True면 완전 삭제, False면 비활성화만"""
         if not self.db_manager:
@@ -185,7 +186,11 @@ class DocumentManager:
                 # 벡터 저장소 파일 삭제 (있는 경우)
                 if vector_store_path and os.path.exists(vector_store_path):
                     import shutil
-                    shutil.rmtree(vector_store_path, ignore_errors=True)
+                    try:
+                        shutil.rmtree(vector_store_path, ignore_errors=True)
+                        print(f"벡터 저장소 삭제 완료: {vector_store_path}")
+                    except Exception as e:
+                        print(f"벡터 저장소 삭제 중 오류: {str(e)}")
             else:
                 # 비활성화만 (is_active = False로 설정)
                 document.is_active = False
@@ -214,7 +219,7 @@ class DocumentManager:
                 new_version=new_version,
                 change_description=change_description,
                 changed_by=changed_by,
-                changed_at=datetime.datetime.utcnow()
+                changed_at=datetime.utcnow()
             )
             
             self.db_manager.session.add(log)
@@ -253,11 +258,29 @@ class DocumentManager:
         except Exception as e:
             print(f"버전 기록 조회 중 오류 발생: {str(e)}")
             return []
-        
+
 # 문서 탐색 및 관리 컴포넌트 업데이트
 def document_explorer(doc_manager):
-    """개선된 문서 탐색 컴포넌트 - 삭제 기능 추가"""
+    """개선된 문서 탐색 컴포넌트 - 탭 전환 시 상태 초기화 기능 추가"""
     st.title("문서 탐색")
+    
+    # 상태 관리 - 현재 선택된 카테고리 추적
+    if "current_doc_category" not in st.session_state:
+        st.session_state.current_doc_category = None
+    
+    # 이전 탭 상태 확인
+    if "previous_tab" not in st.session_state:
+        st.session_state.previous_tab = None
+    
+    # 현재 탭 가져오기
+    current_tab = st.session_state.get("_current_tab", None)
+    
+    # 탭이 변경되었는지 확인
+    if st.session_state.previous_tab != current_tab:
+        # 탭이 변경되면 선택된 문서 ID 초기화
+        if "selected_doc_id" in st.session_state:
+            st.session_state.selected_doc_id = None
+        st.session_state.previous_tab = current_tab
     
     # 사용 가능한 카테고리 목록 가져오기
     categories = doc_manager.get_available_categories()
@@ -283,6 +306,9 @@ def document_explorer(doc_manager):
         
         for i, category in enumerate(categories):
             with tabs[i]:
+                # 현재 카테고리 업데이트
+                st.session_state.current_doc_category = category
+                
                 # 해당 카테고리의 문서 목록 가져오기
                 documents = doc_manager.get_documents_by_category(category)
                 
@@ -347,20 +373,32 @@ def document_explorer(doc_manager):
                             st.warning(f"'{filename}' 문서를 정말 삭제하시겠습니까?")
                         with confirm_col2:
                             if st.button("삭제 확인", key=f"confirm_del_{doc_id}"):
-                                # 문서 삭제 처리
-                                success = doc_manager.delete_document(doc_id, permanently=False)
+                                # 문서 삭제 처리 - 완전 삭제(permanently=True)로 변경
+                                success = doc_manager.delete_document(doc_id, permanently=True)
                                 
                                 if success:
                                     st.success("문서가 성공적으로 삭제되었습니다.")
-                                    # 버전 기록 생성
-                                    doc_manager.create_document_version_log(
-                                        doc_id=doc_id,
-                                        previous_version=doc_version,
-                                        new_version=0,  # 삭제됨을 나타내는 버전
-                                        change_description="문서 삭제됨",
-                                        changed_by=st.session_state.get("username", "unknown")
-                                    )
+                                    # 벡터 저장소 갱신
+                                    if "document_manager" in st.session_state and st.session_state.document_manager:
+                                        # 임베딩 모델 설정
+                                        embedding_model = st.session_state.get("EMBEDDING_MODEL", "text-embedding-3-small")
+                                        api_key = os.environ.get("OPENAI_API_KEY")
+                                        
+                                        # 벡터 저장소 다시 로드
+                                        from vectorstore_utils import load_vectorstores
+                                        st.session_state.vectorstore = load_vectorstores(
+                                            st.session_state.document_manager,
+                                            embedding_model,
+                                            api_key
+                                        )
+                                        
+                                        # RAG 워크플로우 재생성
+                                        from rag_utils import create_rag_workflow
+                                        st.session_state.rag_workflow = create_rag_workflow()
+                                        
+                                    # 상태 초기화
                                     st.session_state.delete_doc_confirm = None
+                                    st.session_state.selected_doc_id = None
                                     time.sleep(1)  # UI 업데이트를 위한 지연
                                     st.rerun()  # 페이지 새로고침
                                 else:
@@ -419,7 +457,7 @@ def document_explorer(doc_manager):
         if st.button("← 문서 목록으로 돌아가기"):
             st.session_state.selected_doc_id = None
             st.rerun()
-        
+
 # PostgreSQL 연결자 클래스 (선택적 사용)
 class PostgreSQLConnector:
     """PostgreSQL 데이터베이스 연결 및 쿼리 실행 클래스"""

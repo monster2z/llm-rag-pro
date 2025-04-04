@@ -119,12 +119,19 @@ class UserManager:
         st.session_state["authentication_status"] = False
     
     def logout(self):
-        """로그아웃 버튼 표시"""
-        if st.sidebar.button("로그아웃"):
-            for key in ["authentication_status", "username", "name", "user_role"]:
-                if key in st.session_state:
-                    del st.session_state[key]
-            st.rerun()
+        """로그아웃 버튼 표시 (위치 개선)"""
+        # 사이드바 대신 제목 옆에 로그아웃 버튼 배치
+        col1, col2 = st.sidebar.columns([1, 1])
+        
+        with col1:
+            st.write(f"{st.session_state.get('name', '')}님")
+        
+        with col2:
+            if st.button("로그아웃", key="logout_btn"):
+                for key in ["authentication_status", "username", "name", "user_role"]:
+                    if key in st.session_state:
+                        del st.session_state[key]
+                st.rerun()
     
     def is_admin(self) -> bool:
         """현재 사용자가 관리자인지 확인"""
